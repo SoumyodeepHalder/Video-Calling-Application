@@ -1,0 +1,256 @@
+<!-- webRTC + google stun server + socket.io for signaling -->
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MeetSphere - WebRTC Call</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+    <!-- Include Socket.io Client Library CDN -->
+    <script src="https://cdn.socket.io/4.8.3/socket.io.min.js"></script>
+</head>
+
+<body class="bg-[#1c1c1e] text-white font-sans h-screen flex flex-col justify-between overflow-hidden select-none">
+
+    <!-- Header Navigation -->
+    <header
+        class="flex justify-between items-center px-4 md:px-6 py-3 md:py-4 bg-transparent z-20 w-full absolute top-0 left-0">
+        <div class="text-xl md:text-2xl font-semibold tracking-wide flex items-center">
+            Meet<span class="font-normal text-gray-300">Sphere</span>
+        </div>
+        <div
+            class="flex items-center space-x-2 bg-black/20 backdrop-blur-md px-2.5 py-1 md:px-3 md:py-1.5 rounded-full border border-white/10">
+            <i class="fa-solid fa-user text-xs md:text-sm text-gray-300"></i>
+            <span id="user-display-name" class="text-xs md:text-sm font-medium text-gray-200">Connecting...</span>
+        </div>
+    </header>
+
+    <!-- Main Content Video Workspace Canvas -->
+    <main
+        class="relative flex-1 w-full h-full flex items-center justify-center p-2 sm:p-4 pt-14 md:pt-16 pb-20 md:pb-4">
+        <div
+            class="relative w-full h-full md:h-auto md:max-w-5xl md:aspect-[16/9] bg-[#2c2c2e] rounded-xl md:rounded-2xl overflow-hidden shadow-2xl border border-white/5">
+
+            <!-- REMOTE VIDEO STREAM TRACK (Full Screen) -->
+            <video id="remote-video" autoplay playsinline
+                class="absolute inset-0 w-full h-full object-cover bg-[#1c1c1e]"></video>
+
+            <!-- Name Tag Marker Badge overlays -->
+            <div
+                class="absolute top-4 left-4 md:top-6 md:left-6 text-lg md:text-2xl text-white font-normal tracking-wide drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] z-10">
+                Remote Participant
+            </div>
+
+            <!-- LOCAL SELF VIDEO STREAM PREVIEW THUMBNAIL (Picture in Picture) -->
+            <div
+                class="absolute bottom-20 right-4 md:bottom-6 md:right-6 w-24 h-36 sm:w-32 sm:h-20 md:w-56 md:h-36 bg-[#3a3a3c] rounded-lg md:rounded-xl overflow-hidden border border-white/20 shadow-xl z-10">
+                <video id="local-video" autoplay playsinline muted
+                    class="w-full h-full object-cover transform scale-x-[-1]"></video>
+            </div>
+
+            <!-- Desktop UI Controls Grid Panels -->
+            <div class="hidden md:flex absolute bottom-6 left-1/2 -translate-x-1/2 items-center space-x-4 z-10">
+                <button
+                    class="toggle-video w-14 h-14 rounded-full bg-white text-black flex items-center justify-center shadow-lg hover:bg-gray-200 transition-all"><i
+                        class="fa-solid fa-video text-lg"></i></button>
+                <button
+                    class="toggle-audio w-14 h-14 rounded-full bg-white text-black flex items-center justify-center shadow-lg hover:bg-gray-200 transition-all"><i
+                        class="fa-solid fa-microphone text-lg"></i></button>
+                <button
+                    class="flip-camera w-14 h-14 rounded-full bg-white text-black flex items-center justify-center shadow-lg hover:bg-gray-200 transition-all"><i
+                        class="fa-solid fa-rotate text-lg"></i></button>
+                <button
+                    class="hang-up w-14 h-14 rounded-full bg-[#ff3b30] text-white flex items-center justify-center shadow-lg hover:bg-red-600 transition-all"><i
+                        class="fa-solid fa-phone text-lg rotate-[135deg]"></i></button>
+            </div>
+        </div>
+    </main>
+
+    <!-- Mobile Screen UI Touch Strip Dashboard Deck -->
+    <div
+        class="md:hidden fixed bottom-0 left-0 right-0 bg-black/60 backdrop-blur-xl border-t border-white/10 px-6 py-4 flex justify-around items-center z-30">
+        <button
+            class="toggle-video w-12 h-12 rounded-full bg-white text-black flex items-center justify-center shadow-md"><i
+                class="fa-solid fa-video text-base"></i></button>
+        <button
+            class="toggle-audio w-12 h-12 rounded-full bg-white text-black flex items-center justify-center shadow-md"><i
+                class="fa-solid fa-microphone text-base"></i></button>
+        <button
+            class="flip-camera w-12 h-12 rounded-full bg-white text-black flex items-center justify-center shadow-md"><i
+                class="fa-solid fa-rotate text-base"></i></button>
+        <button
+            class="hang-up w-12 h-12 rounded-full bg-[#ff3b30] text-white flex items-center justify-center shadow-md"><i
+                class="fa-solid fa-phone text-base rotate-[135deg]"></i></button>
+    </div>
+
+    <!-- WebRTC JavaScript Engine Core Code Block -->
+    <script>
+        $(document).ready(function () {
+            // Configuration configurations variables
+            const ROOM_ID = "default-global-room"; // Change room dynamically for scaling
+            const SIGNAL_SERVER_URL = "http://localhost:3000"; // Point towards signaling server instance location
+
+            let localStream;
+            let peerConnection;
+            let socket;
+            let currentFacingMode = "user"; // To handle camera switching tracking adjustments
+
+            // Public Google STUN Servers parameters setup
+            const rtcConfiguration = {
+                iceServers: [
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+            };
+
+            // Initialize Camera Streams
+            async function startMediaCapture() {
+                try {
+                    localStream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: currentFacingMode },
+                        audio: true
+                    });
+                    document.getElementById('local-video').srcObject = localStream;
+                    initializeSignalingConnection();
+                } catch (error) {
+                    console.error("Camera access permission access denied:", error);
+                    alert("Please provide camera & microphone permissions to begin video sync.");
+                }
+            }
+
+            // Initialize Socket Routing parameters bindings
+            function initializeSignalingConnection() {
+                socket = io(SIGNAL_SERVER_URL);
+
+                socket.on('connect', () => {
+                    $('#user-display-name').text(`ID: ${socket.id.substring(0, 5)}`);
+                    socket.emit('join-room', ROOM_ID);
+                });
+
+                // Triggered if you are room anchor and user joins late
+                socket.on('peer-joined', async (peerId) => {
+                    createPeerConnection(peerId, true);
+                });
+
+                // Inbound WebRTC Signaling handler engine
+                socket.on('signal', async (data) => {
+                    if (!peerConnection) {
+                        createPeerConnection(data.from, false);
+                    }
+
+                    if (data.signal.sdp) {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal.sdp));
+                        if (data.signal.sdp.type === 'offer') {
+                            const answer = await peerConnection.createAnswer();
+                            await peerConnection.setLocalDescription(answer);
+                            socket.emit('signal', { to: data.from, signal: { sdp: peerConnection.localDescription } });
+                        }
+                    } else if (data.signal.candidate) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
+                    }
+                });
+
+                socket.on('peer-left', () => {
+                    document.getElementById('remote-video').srcObject = null;
+                    if (peerConnection) {
+                        peerConnection.close();
+                        peerConnection = null;
+                    }
+                });
+            }
+
+            // Build Core peer-to-peer setup pipeline bindings logic loop elements
+            function createPeerConnection(targetPeerId, isInitiator) {
+                peerConnection = new RTCPeerConnection(rtcConfiguration);
+
+                // Load ongoing internal local dynamic tracks to outgoing payload pipeline channel wrappers
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+                // Route internal dynamic network routing configurations
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        socket.emit('signal', { to: targetPeerId, signal: { candidate: event.candidate } });
+                    }
+                };
+
+                // Stream Receiver Output Hook bindings interface mapping assignments
+                peerConnection.ontrack = (event) => {
+                    const remoteVideo = document.getElementById('remote-video');
+                    if (!remoteVideo.srcObject) {
+                        remoteVideo.srcObject = event.streams[0];
+                    }
+                };
+
+                // Handle handshake instantiation actions patterns
+                if (isInitiator) {
+                    peerConnection.onnegotiationneeded = async () => {
+                        try {
+                            const offer = await peerConnection.createOffer();
+                            await peerConnection.setLocalDescription(offer);
+                            socket.emit('signal', { to: targetPeerId, signal: { sdp: peerConnection.localDescription } });
+                        } catch (err) {
+                            console.error("Negotiation error occurred:", err);
+                        }
+                    };
+                }
+            }
+
+            // UI Interactive Button Bindings Event Handlers Logic mapping rules
+            $('.toggle-video').on('click', function () {
+                const videoTrack = localStream.getVideoTracks()[0];
+                if (videoTrack) {
+                    videoTrack.enabled = !videoTrack.enabled;
+                    const isActive = videoTrack.enabled;
+                    $('.toggle-video').toggleClass('bg-gray-600 text-white bg-white text-black');
+                    $('.toggle-video i').toggleClass('fa-video fa-video-slash');
+                }
+            });
+            $('.toggle-audio').on('click', function () {
+                const audioTrack = localStream.getAudioTracks()[0];
+                if (audioTrack) {
+                    audioTrack.enabled = !audioTrack.enabled;
+                    $('.toggle-audio').toggleClass('bg-gray-600 text-white bg-white text-black');
+                    $('.toggle-audio i').toggleClass('fa-microphone fa-microphone-slash');
+                }
+            });
+            // Camera toggle routine action functions
+            $('.flip-camera').on('click', async function () {
+                $('.flip-camera i').addClass('animate-spin');
+                setTimeout(() => $('.flip-camera i').removeClass('animate-spin'), 500);
+                if (localStream) {
+                    currentFacingMode = (currentFacingMode === "user") ? "environment" : "user";
+                    localStream.getVideoTracks()[0].stop();
+                    // Release the busy sensor reference lock state
+                    const newVideoTrackStream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: currentFacingMode }
+                    });
+                    const newVideoTrack = newVideoTrackStream.getVideoTracks()[0];
+                    document.getElementById('local-video').srcObject = newVideoTrackStream;
+                    // Update local viewer loop reference target
+                    if (peerConnection) {
+                        const senders = peerConnection.getSenders();
+                        const videoSender = senders.find(sender => sender.track.kind === 'video');
+                        if (videoSender) {
+                            videoSender.replaceTrack(newVideoTrack);
+                        }
+                    }
+                }
+            });
+            $('.hang-up').on('click', function () {
+                if (socket) socket.disconnect();
+                if (localStream) localStream.getTracks().forEach(track => track.stop());
+                location.reload();
+                // Quick reset loop strategy mapping mechanism
+            });
+            // Boot media assets components initialization
+            startMediaCapture();
+        });
+    </script>
+</body>
+
+</html>
